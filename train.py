@@ -9,6 +9,7 @@ from models import Encoder, DecoderWithAttention
 from datasets import *
 from utils import *
 from nltk.translate.bleu_score import corpus_bleu
+from scipy.misc import imread, imresize
 
 # Data parameters
 data_folder = '/media/ssd/caption data'  # folder with data files saved by create_input_files.py
@@ -52,13 +53,20 @@ def main():
 
     # Initialize / load checkpoint
     if checkpoint is None:
-        decoder = DecoderWithAttention(attention_dim=attention_dim,
-                                       embed_dim=emb_dim,
-                                       decoder_dim=decoder_dim,
-                                       vocab_size=len(word_map),
-                                       dropout=dropout)
-        decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
-                                             lr=decoder_lr)
+        structure_decoder = DecoderWithAttention(attention_dim=attention_dim,
+                                                 embed_dim=emb_dim,
+                                                 decoder_dim=decoder_dim,
+                                                 vocab_size=len(word_map),
+                                                 dropout=dropout)
+        cell_decoder = DecoderWithAttention(attention_dim=attention_dim,
+                                            embed_dim=emb_dim,
+                                            decoder_dim=decoder_dim,
+                                            vocab_size=len(word_map),
+                                            dropout=dropout)
+        structure_decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
+                                                       lr=decoder_lr)
+        cell_decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
+                                                  lr=decoder_lr)
         encoder = Encoder()
         encoder.fine_tune(fine_tune_encoder)
         encoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, encoder.parameters()),
@@ -109,7 +117,8 @@ def main():
         # One epoch's training
         train(train_loader=train_loader,
               encoder=encoder,
-              decoder=decoder,
+              structure_decoder=structure_decoder,
+              cell_decoder=cell_decoder,
               criterion=criterion,
               encoder_optimizer=encoder_optimizer,
               decoder_optimizer=decoder_optimizer,
@@ -118,7 +127,8 @@ def main():
         # One epoch's validation
         recent_bleu4 = validate(val_loader=val_loader,
                                 encoder=encoder,
-                                decoder=decoder,
+                                structure_decoder=decoder,
+                                cell_decoder=cell_decoder,
                                 criterion=criterion)
 
         # Check if there was an improvement
@@ -135,20 +145,32 @@ def main():
                         decoder_optimizer, recent_bleu4, is_best)
 
 
-def train(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch):
+def read_image_from_path(im_path):
+    img = imread(im_path)
+    if len(img.shape) == 2:
+        img = img[:, :, np.newaxis]
+        img = np.concatenate([img, img, img], axis=2)
+    img = imresize(img, (256, 256))
+    img = img.transpose(2, 0, 1)
+    img = img / 255.
+    return img
+
+def train(train_loader, encoder, structure_decoder, cell_decoder, criterion, encoder_optimizer, decoder_optimizer, epoch):
     """
     Performs one epoch's training.
 
     :param train_loader: DataLoader for training data
     :param encoder: encoder model
-    :param decoder: decoder model
+    :param structure_decoder: structure decoder model
+    :param cell_decoder: cell decoder
     :param criterion: loss layer
     :param encoder_optimizer: optimizer to update encoder's weights (if fine-tuning)
     :param decoder_optimizer: optimizer to update decoder's weights
     :param epoch: epoch number
     """
 
-    decoder.train()  # train mode (dropout and batchnorm is used)
+    structure_decoder.train()  # train mode (dropout and batchnorm is used)
+    cell_decoder.train()
     encoder.train()
 
     batch_time = AverageMeter()  # forward prop. + back prop. time
@@ -159,28 +181,33 @@ def train(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_
     start = time.time()
 
     # Batches
-    for i, (imgs, caps, caplens) in enumerate(train_loader):
+    for i, (img_path, caps, caplens) in enumerate(train_loader):
         data_time.update(time.time() - start)
 
         # Move to GPU, if available
-        imgs = imgs.to(device)
+        img = read_image_from_path(img_path)
+        img = torch.FloatTensor(img).to(device)
         caps = caps.to(device)
         caplens = caplens.to(device)
 
         # Forward prop.
-        imgs = encoder(imgs)
-        scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
+        imgs = encoder(img)
+        structure_scores, structure_caps_sorted, structure_decode_lengths, structure_alphas, structure_sort_ind = structure_decoder(imgs, caps, caplens)
+        cell_scores, cell_caps_sorted, cell_decode_lengths, cell_alphas, cell_sort_ind = cell_decoder(imgs, caps, caplens)
+
 
         # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
-        targets = caps_sorted[:, 1:]
+        structure_targets = structure_caps_sorted[:, 1:]
+        cell_targets = cell_caps_sorted[:, 1:]
 
         # Remove timesteps that we didn't decode at, or are pads
         # pack_padded_sequence is an easy trick to do this
-        scores, _ = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-        targets, _ = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+        structure_scores, _ = pack_padded_sequence(scores, decode_lengths, batch_first=True)
+        structure_targets, _ = pack_padded_sequence(targets, decode_lengths, batch_first=True)
 
         # Calculate loss
-        loss = criterion(scores, targets)
+        structure_loss = criterion(structure_scores, structure_targets)
+        print(structure_scores)
 
         # Add doubly stochastic attention regularization
         loss += alpha_c * ((1. - alphas.sum(dim=1)) ** 2).mean()
@@ -288,7 +315,8 @@ def validate(val_loader, encoder, decoder, criterion):
                 print('Validation: [{0}/{1}]\t'
                       'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'.format(i, len(val_loader), batch_time=batch_time,
+                      'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'.format(i, len(val_loader),
+                                                                                batch_time=batch_time,
                                                                                 loss=losses, top5=top5accs))
 
             # Store references (true captions), and hypothesis (prediction) for each image

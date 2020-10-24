@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="3dec577a-e954-4df9-88a2-e172d9d576f0" name="lab">
+        <fileTransfer rootFolder="/home/lihuichao/academic/table2html" accessType="SFTP" host="10.108.17.137" port="22" sshConfigId="fd2091ca-4190-469d-a6e0-ce0e5e9b6354" sshConfig="lihuichao@10.108.17.137:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
