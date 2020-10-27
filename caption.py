@@ -10,7 +10,7 @@ import argparse
 from scipy.misc import imread, imresize
 from PIL import Image
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 
 
 def caption_image_beam_search(encoder, structure_decoder, cell_decoder, image_path, structure_word_map, cell_word_map, beam_size=3):
@@ -76,7 +76,7 @@ def caption_image_beam_search(encoder, structure_decoder, cell_decoder, image_pa
 
     # Start decoding
     step = 1
-    h, c = decoder.init_hidden_state(encoder_out)
+    h, c = structure_decoder.init_hidden_state(encoder_out)
 
     # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
     while True:
@@ -88,11 +88,12 @@ def caption_image_beam_search(encoder, structure_decoder, cell_decoder, image_pa
         alpha = alpha.view(-1, enc_image_size, enc_image_size)  # (s, enc_image_size, enc_image_size)
 
         gate = structure_decoder.sigmoid(decoder.f_beta(h))  # gating scalar, (s, encoder_dim)
-        awe = gate * awe
 
-        h, c = decoder.decode_step(torch.cat([embeddings, awe], dim=1), (h, c))  # (s, decoder_dim)
+        structure_awe = gate * structure_awe
 
-        scores = decoder.fc(h)  # (s, vocab_size)
+        h, c = structure_decoder.decode_step(torch.cat([embeddings, structure_awe], dim=1), (h, c))  # (s, decoder_dim)
+
+        scores = structure_decoder.fc(h)  # (s, vocab_size)
         scores = F.log_softmax(scores, dim=1)
 
         # Add
